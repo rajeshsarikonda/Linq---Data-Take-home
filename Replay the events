@@ -1,0 +1,67 @@
+import json
+from confluent_kafka import Consumer, TopicPartition, OFFSET_BEGINNING, KafkaError
+
+def replay_events(bootstrap_servers, topic, group_id, start_timestamp, end_timestamp, process_event_func):
+    consumer_config = {
+        'bootstrap.servers': bootstrap_servers,
+        'group.id': group_id,
+        'auto.offset.reset': 'earliest', 
+        'enable.auto.commit': False 
+    }
+
+    consumer = Consumer(consumer_config)
+
+    partitions = consumer.partitions_for_topic(topic)
+    topic_partitions = [TopicPartition(topic, p) for p in partitions]
+
+    # Get offsets for start and end timestamps
+    start_offsets = consumer.offsets_for_times([TopicPartition(topic, p, start_timestamp) for p in partitions])
+    end_offsets = consumer.offsets_for_times([TopicPartition(topic, p, end_timestamp) for p in partitions])
+
+    # Assign partitions and seek to start offsets
+    consumer.assign(topic_partitions)
+    for tp, offset_and_ts in start_offsets.items():
+        if offset_and_ts and offset_and_ts.offset is not None:
+            consumer.seek(TopicPartition(tp.topic, tp.partition, offset_and_ts.offset))
+
+    # Consume and process events
+    try:
+        while True:
+            msg = consumer.poll(1.0) # poll for 1 second.
+
+            if msg is None:
+                continue
+            if msg.error():
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    
+                    # End of partition, check if all partitions have been processed.
+                    all_partitions_finished = True
+                    for tp, offset_and_ts in end_offsets.items():
+                        current_offset = consumer.get_watermark_offsets(TopicPartition(tp.topic, tp.partition))[0]
+                        if offset_and_ts and offset_and_ts.offset is not None and current_offset < offset_and_ts.offset:
+                            all_partitions_finished = False
+                            break
+
+                    if all_partitions_finished:
+                        break 
+                else:
+                    print(f"ERROR: {msg.error()}")
+                    continue
+
+            event_timestamp = msg.timestamp()[1]
+
+            if event_timestamp <= end_timestamp:
+                try:
+                    event_data = json.loads(msg.value().decode('utf-8')) # Decode event data
+                    process_event_func(event_data) # Call event processing function
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding JSON: {e}")
+            else:
+                #if the event is past the end timestamp, seek to the end offsets.
+                for tp, offset_and_ts in end_offsets.items():
+                    if offset_and_ts and offset_and_ts.offset is not None:
+                        consumer.seek(TopicPartition(tp.topic, tp.partition, offset_and_ts.offset))
+
+# Example usage:
+def process_my_event(event_data):
+    print(f"Processing event: {event_data}")
