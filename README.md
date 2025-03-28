@@ -1,7 +1,5 @@
 # Linq---Data-Take-home
 
-# Linq---Data-Take-home
-
 This repository contains code examples and utilities for replaying events from an event stream (specifically Kafka) and performing data processing tasks such as filtering, aggregation, and materialized view creation.
 
 ## Contents
